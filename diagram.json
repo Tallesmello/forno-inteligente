@@ -39,7 +39,7 @@
     [ "led1:A", "esp:26", "green", [ "v0" ] ],
     [ "led1:C", "esp:GND.1", "black", [ "v0" ] ],
     [ "btn1:1.l", "esp:GND.2", "black", [ "h0" ] ],
-    [ "btn1:1.r", "esp:27", "green", [ "v-48", "h-259", "v144" ] ]
+    [ "btn1:2.l", "esp:27", "green", [ "h-28.8", "v-67", "h-163.2", "v144" ] ]
   ],
   "dependencies": {}
 }
