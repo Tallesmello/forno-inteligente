@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "author": "Talles Mello",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-devkit-c-v4", "id": "esp", "top": 0, "left": -52.76, "attrs": {} },
+    {
+      "type": "wokwi-led",
+      "id": "led1",
+      "top": 63.6,
+      "left": -178.6,
+      "attrs": { "color": "red" }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn1",
+      "top": 15.8,
+      "left": 124.8,
+      "attrs": { "color": "green", "xray": "1" }
+    },
+    {
+      "type": "wokwi-ntc-temperature-sensor",
+      "id": "ntc1",
+      "top": 89,
+      "left": -355.8,
+      "attrs": {}
+    },
+    { "type": "wokwi-potentiometer", "id": "pot1", "top": -78.1, "left": -163.4, "attrs": {} }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [ "ntc1:GND", "esp:GND.1", "black", [ "h57.6", "v38.4" ] ],
+    [ "ntc1:VCC", "esp:3V3", "red", [ "h19.2", "v-144" ] ],
+    [ "ntc1:OUT", "esp:34", "green", [ "h48", "v-9.7" ] ],
+    [ "pot1:VCC", "esp:3V3", "red", [ "v38.4", "h8.8" ] ],
+    [ "pot1:SIG", "esp:35", "green", [ "v0" ] ],
+    [ "pot1:GND", "esp:GND.1", "black", [ "v0" ] ],
+    [ "led1:A", "esp:26", "green", [ "v0" ] ],
+    [ "led1:C", "esp:GND.1", "black", [ "v0" ] ],
+    [ "btn1:1.l", "esp:GND.2", "black", [ "h0" ] ],
+    [ "btn1:1.r", "esp:27", "green", [ "v-48", "h-259", "v144" ] ]
+  ],
+  "dependencies": {}
+}
