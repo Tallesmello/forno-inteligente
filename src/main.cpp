@@ -1,155 +1,165 @@
+#include <Arduino.h>
+#include <LiquidCrystal.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
-#include <ArduinoJson.h>
+#include <math.h>
 
-// ========= CONFIGURAÇÕES DE REDE E BROKER =========
-const char* ssid = "Wokwi-GUEST";            // Nome da rede WiFi
-const char* password = "";                   // Senha da rede WiFi
-const char* mqtt_server = "broker.hivemq.com"; // Endereço do Broker MQTT gratuito
+#include "wifi_con.h"
+#include "mqtt_con.h"
 
-WiFiClient espClient;                        // Cliente WiFi do ESP32
-PubSubClient client(espClient);              // Cliente MQTT que utiliza o cliente WiFi
+//-------------------------------------------------
+// Definição dos pinos
+//-------------------------------------------------
+#define ANG_TMP     11
+#define DIG_LDR     12
+#define DIG_GAS     13
 
-// ========= DEFINIÇÃO DOS PINOS (HARDWARE) =========
-#define NTC_PIN 34  // Sensor de Temperatura (Analógico)
-#define POT_PIN 35  // Potenciômetro para ajustar o Setpoint (Analógico)
-#define LED_PIN 26  // LED que representa a Resistência de aquecimento
-#define BTN_PIN 27  // Botão de pressão para ligar/desligar o sistema
+#define SIN_DE_GAS  2
+#define RELE_LUZ    14
 
-// ========= VARIÁVEIS DE CONTROLE DO SISTEMA =========
-float temperatura = 0;       // Armazena a leitura atual do sensor
-float setpoint = 180;        // Temperatura alvo desejada
-bool fornoLigado = false;    // Estado geral do forno (ligado/desligado pelo botão)
-bool resistencia = false;    // Estado da resistência (ligada/desligada pelo termostato)
-float histerese = 2.0;       // Margem de erro para evitar que a resistência ligue/desligue freneticamente
+//-------------------------------------------------
+// Variáveis dos sensores
+//-------------------------------------------------
+int med_sen_gas;
+int med_sen_luz;
+int med_sen_tmp;
 
-// ========= VARIÁVEIS DE TEMPO E ESTADO =========
-unsigned long ultimoEnvio = 0;      // Armazena o tempo do último envio MQTT
-const long intervalo = 2000;        // Tempo de espera entre envios (2 segundos)
-bool estadoAnteriorBotao = HIGH;    // Armazena o estado anterior do botão para detectar o clique
+const int BETA = 3950;
+const double k_coef = 273.15;
+double temp;
 
-// ========= FUNÇÃO: CONEXÃO WIFI =========
-void conectarWiFi() {
-  Serial.print("Conectando ao WiFi");
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500); 
-    Serial.print("."); // Feedback visual enquanto tenta conectar
-  }
-  Serial.println("\nWiFi conectado!");
-}
+//-------------------------------------------------
+// LCD 20x4
+//-------------------------------------------------
+LiquidCrystal lcd(48, 38, 39, 40, 41, 42);
 
-// ========= FUNÇÃO: CONEXÃO MQTT =========
-void conectarMQTT() {
-  // Loop que tenta conectar ao Broker até conseguir
-  while (!client.connected()) {
-    Serial.println("Conectando ao MQTT...");
-    // Tenta conectar com um ID de cliente único
-    if (client.connect("forno_talles_simples")) {
-      Serial.println("MQTT conectado!");
-    } else {
-      delay(2000); // Espera 2 segundos antes de tentar novamente
-    }
-  }
-}
+//-------------------------------------------------
+// Controle do pisca-alerta de gás
+//-------------------------------------------------
+bool gasBlinkState = false;
+unsigned long lastGasBlink = 0;
+const unsigned long GAS_BLINK_INTERVAL = 1000;
 
-// ========= FUNÇÃO: LEITURA DOS SENSORES =========
-float lerTemperatura() {
-  // Lê o valor analógico (0-4095) e mapeia para a faixa de 20°C a 300°C
-  return map(analogRead(NTC_PIN), 0, 4095, 20, 300);
-}
-
-// ========= FUNÇÃO: LÓGICA DO TERMOSTATO =========
-void controlarForno() {
-  // Se o botão geral estiver desligado, a resistência deve estar desligada sempre
-  if (!fornoLigado) {
-    resistencia = false;
-  } else {
-    // Lógica com Histerese: 
-    // Liga se estiver abaixo do setpoint (com margem)
-    if (temperatura < setpoint - histerese) resistencia = true;
-    // Desliga se estiver acima do setpoint (com margem)
-    if (temperatura > setpoint + histerese) resistencia = false;
-  }
-  // Ativa ou desativa o pino físico do LED/Resistência
-  digitalWrite(LED_PIN, resistencia);
-}
-
-// ========= FUNÇÃO: ENVIO DE DADOS (JSON) =========
-void enviarTelemetria() {
-  StaticJsonDocument<200> doc;
-  
-  // Monta o objeto JSON com os dados atuais
-  doc["temperatura"] = (int)temperatura;
-  doc["setpoint"] = (int)setpoint;
-  doc["forno"] = fornoLigado;
-  doc["resistencia"] = resistencia;
-
-  char jsonBuffer[200];
-  serializeJson(doc, jsonBuffer); // Converte o objeto para texto (string)
-  
-  // Publica no tópico de telemetria
-  client.publish("talles/forno/telemetria", jsonBuffer);
-
-  // Exibe o status formatado no Monitor Serial para depuração
-  Serial.println("------------ STATUS DO FORNO ------------");
-  Serial.print("Temperatura Atual: "); Serial.print(temperatura); Serial.println(" °C");
-  Serial.print("Setpoint: ");          Serial.print(setpoint);    Serial.println(" °C");
-  Serial.print("Forno Ligado: ");      Serial.println(fornoLigado ? "SIM" : "NAO");
-  Serial.print("Resistencia Ativa: "); Serial.println(resistencia ? "SIM" : "NAO");
-  Serial.print("JSON Enviado: ");      Serial.println(jsonBuffer);
-  Serial.println("------------------------------------------\n");
-}
-
-// ========= SETUP: CONFIGURAÇÃO INICIAL =========
+//-------------------------------------------------
+// Setup
+//-------------------------------------------------
 void setup() {
   Serial.begin(115200);
-  
-  pinMode(LED_PIN, OUTPUT);
-  // INPUT_PULLUP ativa o resistor interno. O botão deve ligar o pino ao GND.
-  pinMode(BTN_PIN, INPUT_PULLUP); 
 
-  conectarWiFi();
-  client.setServer(mqtt_server, 1883); // Configura o servidor e a porta do MQTT
+  pinMode(DIG_GAS, INPUT);
+  pinMode(DIG_LDR, INPUT);
+  pinMode(ANG_TMP, INPUT);
+
+  pinMode(SIN_DE_GAS, OUTPUT);
+  pinMode(RELE_LUZ, OUTPUT);
+
+  lcd.begin(20, 4);
+  lcd.clear();
+
+  lcd.setCursor(5, 0);
+  lcd.print("Sistema de");
+
+  lcd.setCursor(1, 1);
+  lcd.print("monitoramento IOT");
+
+  lcd.setCursor(5, 2);
+  lcd.print("feito pela");
+
+  lcd.setCursor(3, 4);
+  lcd.print("Equipe X");
+
+  connectWiFi();
+  delay(2000);
+  lcd.clear();
+
+  lcd.setCursor(1, 0);
+  lcd.print("Para o programa de");
+
+  lcd.setCursor(2, 1);
+  lcd.print("especializacao em");
+
+  lcd.setCursor(0, 2);
+  lcd.print("eletronica embarcada");
+
+  lcd.setCursor(0, 3);
+  lcd.print("FIAP + CPQD + SOFTEX");  
+  connectMQTT();
+  delay(2000);
+  lcd.clear();
 }
 
-// ========= LOOP: EXECUÇÃO CONTÍNUA =========
+//-------------------------------------------------
+// Loop principal
+//-------------------------------------------------
 void loop() {
-  // Garante que o MQTT esteja sempre conectado
-  if (!client.connected()) conectarMQTT();
-  client.loop(); // Mantém a comunicação interna com o broker ativa
 
-  // --- 1. DETECÇÃO DE CLIQUE DO BOTÃO ---
-  bool estadoAtualBotao = digitalRead(BTN_PIN);
-  
-  // Só entra aqui se o botão for apertado AGORA (evita repetir a ação se segurar o botão)
-  if (estadoAtualBotao == LOW && estadoAnteriorBotao == HIGH) {
-    fornoLigado = !fornoLigado; // Inverte o estado (liga se estava desligado e vice-versa)
-    
-    if (fornoLigado) {
-      Serial.println("SISTEMA LIGADO");
-      client.publish("talles/forno/status", "LIGADO");
-    } else {
-      Serial.println("SISTEMA DESLIGADO");
-      client.publish("talles/forno/status", "DESLIGADO");
-      // Envia uma última telemetria para atualizar o Dashboard com o estado "desligado"
-      enviarTelemetria(); 
-    }
-    delay(150); // Debounce: pequeno tempo para ignorar ruído elétrico do botão
+  if (!mqtt.connected()) {
+    connectMQTT();
   }
-  estadoAnteriorBotao = estadoAtualBotao;
+  mqtt.loop();
 
-  // --- 2. ATUALIZAÇÃO DOS SENSORES E CONTROLE ---
-  temperatura = lerTemperatura();
-  // Ajusta o setpoint via potenciômetro (faixa de 50°C a 250°C)
-  setpoint = map(analogRead(POT_PIN), 0, 4095, 50, 250);
-  controlarForno();
+  //-------------------------------------------------
+  // Leitura dos sensores
+  //-------------------------------------------------
+  med_sen_gas = !digitalRead(DIG_GAS);
+  med_sen_luz = digitalRead(DIG_LDR);
+  med_sen_tmp = analogRead(ANG_TMP);
 
-  // --- 3. ENVIO TEMPORIZADO (ESTILO MULTITAREFA) ---
-  unsigned long tempoAtual = millis();
-  // Só envia dados repetitivos se o forno estiver LIGADO e o tempo de intervalo passou
-  if (fornoLigado && (tempoAtual - ultimoEnvio >= intervalo)) {
-    ultimoEnvio = tempoAtual;
-    enviarTelemetria();
+  temp = 1 / (log(1 / (4095.0 / med_sen_tmp - 1)) / BETA + 1.0 / 298.15) - k_coef;
+
+  //-------------------------------------------------
+  // Controle da luz:
+  //-------------------------------------------------
+  digitalWrite(RELE_LUZ, med_sen_luz);
+
+  //-------------------------------------------------
+  // Alerta de gás
+  //-------------------------------------------------
+  unsigned long now = millis();
+
+  if (med_sen_gas) {
+    if (now - lastGasBlink >= GAS_BLINK_INTERVAL) {
+      lastGasBlink = now;
+      gasBlinkState = !gasBlinkState;
+      digitalWrite(SIN_DE_GAS, gasBlinkState);
+    }
+  } else {
+    digitalWrite(SIN_DE_GAS, LOW);
+    gasBlinkState = false;
+  }
+
+  //-------------------------------------------------
+  // LCD 20x4 (1 Hz)
+  //-------------------------------------------------
+  if (now - lastLcd >= 1000) {
+    lastLcd = now;
+
+    lcd.clear();
+
+    lcd.setCursor(0, 0);
+    lcd.print("Temp. atual: ");
+    lcd.print(temp);
+    lcd.print((char)223);
+    lcd.print("C");
+
+    lcd.setCursor(0, 1);
+    lcd.print("Estado da  luz: ");
+    lcd.print(med_sen_luz ? "ON " : "OFF");
+
+    lcd.setCursor(0, 2);
+    lcd.print("Estado do  gas: ");
+    lcd.print(med_sen_gas ? "SOS" : "OK");
+
+    lcd.setCursor(0, 3);
+    lcd.print("Estado do MQTT: ");
+    lcd.print(mqtt.connected() ? "ON" : "OFF");
+  }
+
+  //-------------------------------------------------
+  // MQTT a cada 2 segundos
+  //-------------------------------------------------
+  if (now - lastMqtt >= 2000) {
+    lastMqtt = now;
+    publishSensors();
   }
 }
